@@ -35,6 +35,7 @@ public final class TalkSystemSpeechSynthesizer: NSObject {
     public func speak(
         text: String,
         language: String? = nil,
+        timeout: TimeInterval? = nil,
         onStart: (() -> Void)? = nil
     ) async throws {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -51,21 +52,12 @@ public final class TalkSystemSpeechSynthesizer: NSObject {
         }
         self.currentUtterance = utterance
 
-        let estimatedSeconds = max(3.0, min(180.0, Double(trimmed.count) * 0.08))
+        // No watchdog timer — speech always plays to completion.
+        // User can interrupt via right Shift key (stopSpeaking).
+        // AVSpeechSynthesizer's didFinish delegate handles normal completion.
         self.watchdog?.cancel()
-        self.watchdog = Task { @MainActor [weak self] in
-            guard let self else { return }
-            try? await Task.sleep(nanoseconds: UInt64(estimatedSeconds * 1_000_000_000))
-            if Task.isCancelled { return }
-            guard self.currentToken == token else { return }
-            if self.synth.isSpeaking {
-                self.synth.stopSpeaking(at: .immediate)
-            }
-            self.finishCurrent(
-                with: NSError(domain: "TalkSystemSpeechSynthesizer", code: 408, userInfo: [
-                    NSLocalizedDescriptionKey: "system TTS timed out after \(estimatedSeconds)s",
-                ]))
-        }
+        self.watchdog = nil
+        _ = timeout
 
         try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { cont in
