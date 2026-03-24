@@ -451,20 +451,25 @@ actor TalkModeRuntime {
 
     private func playAssistant(text: String) async {
         guard let input = await self.preparePlaybackInput(text: text) else { return }
+        let useElevenLabs = input.apiKey != nil && !input.apiKey!.isEmpty && input.voiceId != nil
         do {
-            if let apiKey = input.apiKey, !apiKey.isEmpty, let voiceId = input.voiceId {
-                try await self.playElevenLabs(input: input, apiKey: apiKey, voiceId: voiceId)
+            if useElevenLabs {
+                try await self.playElevenLabs(input: input, apiKey: input.apiKey!, voiceId: input.voiceId!)
             } else {
                 try await self.playSystemVoice(input: input)
             }
         } catch {
-            self.ttsLogger
-                .error(
-                    "talk TTS failed: \(error.localizedDescription, privacy: .public); " +
-                        "falling back to system voice")
-            do {
-                try await self.playSystemVoice(input: input)
-            } catch {
+            if useElevenLabs {
+                self.ttsLogger
+                    .error(
+                        "talk TTS failed: \(error.localizedDescription, privacy: .public); " +
+                            "falling back to system voice")
+                do {
+                    try await self.playSystemVoice(input: input)
+                } catch {
+                    self.ttsLogger.error("talk system voice failed: \(error.localizedDescription, privacy: .public)")
+                }
+            } else {
                 self.ttsLogger.error("talk system voice failed: \(error.localizedDescription, privacy: .public)")
             }
         }
@@ -666,7 +671,8 @@ actor TalkModeRuntime {
         await TalkSystemSpeechSynthesizer.shared.stop()
         try await TalkSystemSpeechSynthesizer.shared.speak(
             text: input.cleanedText,
-            language: input.language)
+            language: input.language,
+            timeout: input.synthTimeoutSeconds)
         self.ttsLogger.info("talk system voice done")
     }
 
@@ -784,7 +790,11 @@ extension TalkModeRuntime {
         }
         self.defaultOutputFormat = cfg.outputFormat
         self.interruptOnSpeech = cfg.interruptOnSpeech
-        self.silenceWindow = TimeInterval(cfg.silenceTimeoutMs) / 1000
+        let configuredSilenceMs = cfg.silenceTimeoutMs
+        let locale = await MainActor.run { AppStateStore.shared.voiceWakeLocaleID }
+        let isCJKLocale = locale.hasPrefix("ko") || locale.hasPrefix("ja") || locale.hasPrefix("zh")
+        let effectiveSilenceMs = isCJKLocale ? max(configuredSilenceMs, 2000) : configuredSilenceMs
+        self.silenceWindow = TimeInterval(effectiveSilenceMs) / 1000
         self.apiKey = cfg.apiKey
         let hasApiKey = (cfg.apiKey?.isEmpty == false)
         let voiceLabel = (cfg.voiceId?.isEmpty == false) ? cfg.voiceId! : "none"
